@@ -10,8 +10,10 @@
 
 - **严格的时间边界处理**：所有滞后和滚动特征仅使用预测起始时间之前的数据。
 - 自动生成价格、负荷、风电、光伏等 **滞后特征** 和 **滚动统计量**。
+- **新增日历特征**：如年内日期的正弦/余弦变换，捕捉季节性趋势。
+- **新增交互特征**：例如小时与温度的乘积 (`hour_x_temp`)，用于捕捉更复杂的关系。
 - 汇聚山东省八个城市（济南、潍坊、临沂、德州、滨州、泰安、烟台、青岛）的气象指标，形成平均气象特征。
-- 预设 **XGBoost** 超参数，兼顾精度与训练速度。
+- **XGBoost 超参数调优**：使用 `GridSearchCV` 和 `TimeSeriesSplit` 进行超参数搜索，以提升模型性能。
 - 训练后打印整体 **MAE / RMSE / R²**，并列出特征重要性。
 - 将 96 点预测结果输出至 `day_ahead_price_forecast.csv`。
 
@@ -88,7 +90,10 @@ python dayaheadprice.py
 
 - **预测起始时间**：在 `main()` 中修改 `prediction_start_time`。
 - **预测长度**：调整 `evaluate_and_save()` 的 `forecast_horizon` 参数（默认 96）。
-- **模型超参数**：在 `train_and_predict()` 中修改。
+- **模型超参数与调优**：
+    - `train_and_predict()` 函数中实现了基于 `GridSearchCV` 和 `TimeSeriesSplit` 的超参数调优。
+    - 调优的参数包括 `n_estimators`, `max_depth`, `learning_rate`, `subsample`, `colsample_bytree`, 和 `min_child_weight`。
+    - 模型现在使用搜索到的最优超参数进行训练，可能带来预测精度的提升。
 
 ---
 

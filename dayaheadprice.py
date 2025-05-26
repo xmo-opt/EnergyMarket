@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -40,7 +41,12 @@ def load_data(file_path):
 def engineer_features(df, prediction_start_time):
     """Engineer features with strict time boundary awareness for day-ahead forecasting."""
     combined_data = df.copy()
-    
+
+    # Add day-of-year features
+    combined_data['day_of_year'] = combined_data['times'].dt.dayofyear
+    combined_data['day_of_year_sin'] = np.sin(combined_data['day_of_year'] / 365.25 * 2 * np.pi)
+    combined_data['day_of_year_cos'] = np.cos(combined_data['day_of_year'] / 365.25 * 2 * np.pi)
+
     # Create lag features with proper time boundaries
     # For 15-minute data: 96 points = 1 day, 192 points = 2 days, 672 points = 1 week
     # Ensure minimum lag of 192 (2 days) for price data
@@ -69,6 +75,11 @@ def engineer_features(df, prediction_start_time):
             
             combined_data[f'{col}_rolling_std_{window}'] = combined_data[col].rolling(
                 window=window, min_periods=1).std().shift(192)  # Shift by at least 2 days
+
+    # Add interaction features
+    combined_data['hour_x_temp'] = combined_data['hour'] * combined_data['avg_temp_2m']
+    if 'load_actual_lag_192' in combined_data.columns:
+        combined_data['hour_x_load_lag'] = combined_data['hour'] * combined_data['load_actual_lag_192']
     
     # Add day-of-week and hour-of-day effects (based on historical averages)
     # These are calculated using data from before the prediction start time
@@ -93,6 +104,7 @@ def engineer_features(df, prediction_start_time):
     feature_columns = [
         # Time features
         'hour', 'day', 'month', 'day_of_week', 'is_weekend',
+        'day_of_year_sin', 'day_of_year_cos', # Added day of year features
         'hour_price_avg', 'dow_price_avg',
         
         # Price lags (all shifted by at least 192 points)
@@ -113,8 +125,13 @@ def engineer_features(df, prediction_start_time):
         'load_forecast', 'wind_forecast', 'solar_forecast',
         
         # Weather
-        'avg_temp_2m', 'avg_wind_speed_10m', 'avg_solar_radiation_ghi', 'avg_humidity_2m'
+        'avg_temp_2m', 'avg_wind_speed_10m', 'avg_solar_radiation_ghi', 'avg_humidity_2m',
+
+        # Interaction features
+        'hour_x_temp'
     ]
+    if 'hour_x_load_lag' in combined_data.columns:
+        feature_columns.append('hour_x_load_lag')
     
     # Filter to include only columns that exist
     feature_columns = [col for col in feature_columns if col in combined_data.columns]
@@ -135,24 +152,42 @@ def engineer_features(df, prediction_start_time):
 
 # 3. Model training and prediction
 def train_and_predict(X_train, y_train, X_test):
-    """Train XGBoost model and make predictions."""
-    model = XGBRegressor(
-        n_estimators=300,
-        learning_rate=0.03,
-        max_depth=6,
-        min_child_weight=2,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        gamma=0.1,
-        reg_alpha=0.1,
-        reg_lambda=1,
-        random_state=42
+    """Train XGBoost model with hyperparameter tuning and make predictions."""
+    
+    param_grid = {
+        'n_estimators': [100, 200], # Reduced for faster execution
+        'max_depth': [3, 5],        # Reduced for faster execution
+        'learning_rate': [0.05, 0.1], # Reduced for faster execution
+        'subsample': [0.8, 0.9],
+        'colsample_bytree': [0.8, 0.9],
+        'min_child_weight': [1, 2]
+    }
+    
+    # Ensure random_state is passed to XGBRegressor for reproducibility
+    xgb_model = XGBRegressor(random_state=42, gamma=0.1, reg_alpha=0.1, reg_lambda=1) 
+    
+    # TimeSeriesSplit for cross-validation
+    # Adjust n_splits based on data size and computational limits
+    # Using a small number of splits for this example
+    tscv = TimeSeriesSplit(n_splits=2) 
+    
+    grid_search = GridSearchCV(
+        estimator=xgb_model,
+        param_grid=param_grid,
+        scoring='neg_mean_squared_error',
+        cv=tscv,
+        n_jobs=-1, # Use all available cores
+        verbose=1 # Add verbosity to see progress
     )
     
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
+    grid_search.fit(X_train, y_train)
     
-    return model, y_pred
+    best_model = grid_search.best_estimator_
+    print(f"Best parameters found: {grid_search.best_params_}")
+    
+    y_pred = best_model.predict(X_test)
+    
+    return best_model, y_pred
 
 # 4. Evaluate and save results
 def evaluate_and_save(model, y_test, y_pred, test_times, feature_columns, forecast_horizon=96):
